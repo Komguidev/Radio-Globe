@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,17 +8,27 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import httpx
 import json
+from jose import JWTError, jwt
+from fastapi.security import OAuth2PasswordBearer
+from passlib.context import CryptContext
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ["DB_NAME"]]
+
+# Security settings
+SECRET_KEY = os.environ.get("SECRET_KEY", "change-me")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+ALGORITHM = "HS256"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 
 # Create the main app without a prefix
 app = FastAPI()
@@ -28,6 +38,7 @@ api_router = APIRouter(prefix="/api")
 
 # Radio Browser API base URL
 RADIO_BROWSER_API = "https://at1.api.radio-browser.info/json"
+
 
 # Define Models
 class RadioStation(BaseModel):
@@ -48,6 +59,35 @@ class RadioStation(BaseModel):
     hls: Optional[int] = 0
     lastcheckok: Optional[int] = 1
 
+
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    email: str
+    hashed_password: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class UserPublic(BaseModel):
+    id: str
+    email: str
+    created_at: datetime
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
 class FavoriteStation(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
@@ -58,6 +98,7 @@ class FavoriteStation(BaseModel):
     favicon: Optional[str] = None
     added_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 class Playlist(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
@@ -67,14 +108,17 @@ class Playlist(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 class CreatePlaylist(BaseModel):
     name: str
     description: Optional[str] = None
+
 
 # Basic routes
 @api_router.get("/")
 async def root():
     return {"message": "Global Radio Discovery API"}
+
 
 # Radio Station Discovery Routes
 @api_router.get("/stations/popular", response_model=List[RadioStation])
@@ -98,7 +142,7 @@ async def get_popular_stations(limit: int = 50):
                 codec="MP3",
                 bitrate=128,
                 hls=0,
-                lastcheckok=1
+                lastcheckok=1,
             ),
             RadioStation(
                 station_uuid="2",
@@ -115,7 +159,7 @@ async def get_popular_stations(limit: int = 50):
                 codec="MP3",
                 bitrate=128,
                 hls=0,
-                lastcheckok=1
+                lastcheckok=1,
             ),
             RadioStation(
                 station_uuid="3",
@@ -132,17 +176,20 @@ async def get_popular_stations(limit: int = 50):
                 codec="MP3",
                 bitrate=128,
                 hls=0,
-                lastcheckok=1
-            )
+                lastcheckok=1,
+            ),
         ]
-        
+
         # Log that we're using mock data
-        logger.warning("Using mock data for popular stations since Radio Browser API is not accessible")
-        
+        logger.warning(
+            "Using mock data for popular stations since Radio Browser API is not accessible"
+        )
+
         return mock_stations[:limit]
     except Exception as e:
         logger.error(f"Error fetching popular stations: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch popular stations")
+
 
 @api_router.get("/stations/search")
 async def search_stations(
@@ -150,7 +197,7 @@ async def search_stations(
     country: Optional[str] = None,
     language: Optional[str] = None,
     tag: Optional[str] = None,
-    limit: int = 50
+    limit: int = 50,
 ):
     """Search radio stations by various criteria"""
     try:
@@ -171,7 +218,7 @@ async def search_stations(
                 codec="MP3",
                 bitrate=128,
                 hls=0,
-                lastcheckok=1
+                lastcheckok=1,
             ),
             RadioStation(
                 station_uuid="2",
@@ -188,7 +235,7 @@ async def search_stations(
                 codec="MP3",
                 bitrate=128,
                 hls=0,
-                lastcheckok=1
+                lastcheckok=1,
             ),
             RadioStation(
                 station_uuid="3",
@@ -205,10 +252,10 @@ async def search_stations(
                 codec="MP3",
                 bitrate=128,
                 hls=0,
-                lastcheckok=1
-            )
+                lastcheckok=1,
+            ),
         ]
-        
+
         # Filter based on search criteria
         filtered_stations = []
         for station in mock_stations:
@@ -221,12 +268,15 @@ async def search_stations(
             if tag and tag not in station.tags:
                 continue
             filtered_stations.append(station)
-        
-        logger.warning("Using mock data for station search since Radio Browser API is not accessible")
+
+        logger.warning(
+            "Using mock data for station search since Radio Browser API is not accessible"
+        )
         return filtered_stations[:limit]
     except Exception as e:
         logger.error(f"Error searching stations: {e}")
         raise HTTPException(status_code=500, detail="Failed to search stations")
+
 
 @api_router.get("/countries")
 async def get_countries():
@@ -243,13 +293,16 @@ async def get_countries():
             {"name": "Japan", "code": "JP", "stationcount": 80},
             {"name": "Brazil", "code": "BR", "stationcount": 70},
             {"name": "Spain", "code": "ES", "stationcount": 60},
-            {"name": "Italy", "code": "IT", "stationcount": 50}
+            {"name": "Italy", "code": "IT", "stationcount": 50},
         ]
-        logger.warning("Using mock data for countries since Radio Browser API is not accessible")
+        logger.warning(
+            "Using mock data for countries since Radio Browser API is not accessible"
+        )
         return mock_countries
     except Exception as e:
         logger.error(f"Error fetching countries: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch countries")
+
 
 @api_router.get("/languages")
 async def get_languages():
@@ -266,13 +319,16 @@ async def get_languages():
             {"name": "Portuguese", "stationcount": 150},
             {"name": "Russian", "stationcount": 100},
             {"name": "Chinese", "stationcount": 80},
-            {"name": "Arabic", "stationcount": 50}
+            {"name": "Arabic", "stationcount": 50},
         ]
-        logger.warning("Using mock data for languages since Radio Browser API is not accessible")
+        logger.warning(
+            "Using mock data for languages since Radio Browser API is not accessible"
+        )
         return mock_languages
     except Exception as e:
         logger.error(f"Error fetching languages: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch languages")
+
 
 @api_router.get("/tags")
 async def get_tags():
@@ -289,13 +345,70 @@ async def get_tags():
             {"name": "country", "stationcount": 250},
             {"name": "news", "stationcount": 200},
             {"name": "talk", "stationcount": 150},
-            {"name": "sports", "stationcount": 100}
+            {"name": "sports", "stationcount": 100},
         ]
-        logger.warning("Using mock data for tags since Radio Browser API is not accessible")
+        logger.warning(
+            "Using mock data for tags since Radio Browser API is not accessible"
+        )
         return mock_tags
     except Exception as e:
         logger.error(f"Error fetching tags: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch tags")
+
+
+# Authentication Routes
+@api_router.post("/register", response_model=Token)
+async def register(user: UserCreate):
+    existing = await db.users.find_one({"email": user.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    hashed_password = pwd_context.hash(user.password)
+    user_obj = User(email=user.email, hashed_password=hashed_password)
+    await db.users.insert_one(user_obj.dict())
+    token = jwt.encode(
+        {
+            "sub": user.email,
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@api_router.post("/login", response_model=Token)
+async def login(user: UserLogin):
+    db_user = await db.users.find_one({"email": user.email})
+    if not db_user or not pwd_context.verify(user.password, db_user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = jwt.encode(
+        {
+            "sub": user.email,
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@api_router.get("/me", response_model=UserPublic)
+async def get_me(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    db_user = await db.users.find_one({"email": email})
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserPublic(
+        id=db_user["id"], email=db_user["email"], created_at=db_user["created_at"]
+    )
+
 
 # Favorites Management
 @api_router.post("/favorites")
@@ -303,14 +416,13 @@ async def add_favorite(favorite: FavoriteStation):
     """Add station to favorites"""
     try:
         # Check if already exists
-        existing = await db.favorites.find_one({
-            "user_id": favorite.user_id,
-            "station_uuid": favorite.station_uuid
-        })
-        
+        existing = await db.favorites.find_one(
+            {"user_id": favorite.user_id, "station_uuid": favorite.station_uuid}
+        )
+
         if existing:
             raise HTTPException(status_code=400, detail="Station already in favorites")
-        
+
         result = await db.favorites.insert_one(favorite.dict())
         return {"message": "Station added to favorites", "id": favorite.id}
     except HTTPException:
@@ -318,6 +430,7 @@ async def add_favorite(favorite: FavoriteStation):
     except Exception as e:
         logger.error(f"Error adding favorite: {e}")
         raise HTTPException(status_code=500, detail="Failed to add favorite")
+
 
 @api_router.get("/favorites/{user_id}", response_model=List[FavoriteStation])
 async def get_favorites(user_id: str):
@@ -329,24 +442,25 @@ async def get_favorites(user_id: str):
         logger.error(f"Error fetching favorites: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch favorites")
 
+
 @api_router.delete("/favorites/{user_id}/{station_uuid}")
 async def remove_favorite(user_id: str, station_uuid: str):
     """Remove station from favorites"""
     try:
-        result = await db.favorites.delete_one({
-            "user_id": user_id,
-            "station_uuid": station_uuid
-        })
-        
+        result = await db.favorites.delete_one(
+            {"user_id": user_id, "station_uuid": station_uuid}
+        )
+
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Favorite not found")
-        
+
         return {"message": "Station removed from favorites"}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error removing favorite: {e}")
         raise HTTPException(status_code=500, detail="Failed to remove favorite")
+
 
 # Playlist Management
 @api_router.post("/playlists/{user_id}")
@@ -356,14 +470,15 @@ async def create_playlist(user_id: str, playlist_data: CreatePlaylist):
         playlist = Playlist(
             user_id=user_id,
             name=playlist_data.name,
-            description=playlist_data.description
+            description=playlist_data.description,
         )
-        
+
         result = await db.playlists.insert_one(playlist.dict())
         return {"message": "Playlist created", "id": playlist.id}
     except Exception as e:
         logger.error(f"Error creating playlist: {e}")
         raise HTTPException(status_code=500, detail="Failed to create playlist")
+
 
 @api_router.get("/playlists/{user_id}", response_model=List[Playlist])
 async def get_playlists(user_id: str):
@@ -375,6 +490,7 @@ async def get_playlists(user_id: str):
         logger.error(f"Error fetching playlists: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch playlists")
 
+
 @api_router.put("/playlists/{playlist_id}/stations/{station_uuid}")
 async def add_station_to_playlist(playlist_id: str, station_uuid: str):
     """Add station to playlist"""
@@ -383,19 +499,20 @@ async def add_station_to_playlist(playlist_id: str, station_uuid: str):
             {"id": playlist_id},
             {
                 "$addToSet": {"stations": station_uuid},
-                "$set": {"updated_at": datetime.utcnow()}
-            }
+                "$set": {"updated_at": datetime.utcnow()},
+            },
         )
-        
+
         if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Playlist not found")
-        
+
         return {"message": "Station added to playlist"}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error adding station to playlist: {e}")
         raise HTTPException(status_code=500, detail="Failed to add station to playlist")
+
 
 # Include the router in the main app
 app.include_router(api_router)
@@ -410,10 +527,10 @@ app.add_middleware(
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
